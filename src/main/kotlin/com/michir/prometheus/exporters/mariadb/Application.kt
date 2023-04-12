@@ -1,5 +1,6 @@
 package com.michir.prometheus.exporters.mariadb
 
+import com.jcraft.jsch.JSch
 import com.sun.net.httpserver.HttpServer
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.Gauge
@@ -9,7 +10,9 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import java.io.FileInputStream
 import java.net.InetSocketAddress
+import java.nio.file.Paths
 import java.sql.Connection
 import java.sql.DriverManager
 import java.util.function.Supplier
@@ -24,11 +27,24 @@ fun main() = runBlocking {
 
     val dbConfig = appConfig.getProperties("maria.properties")
     Class.forName(dbConfig["driver"] as String);
-    val connection = DriverManager.getConnection(
-        dbConfig["url"] as String,
-        dbConfig["username"] as String,
-        dbConfig["password"] as String
-    )
+    val projectPath = Paths.get("").toAbsolutePath().toString()
+    val filesPath = "$projectPath/src/main/kotlin/com/michir/prometheus/exporters/mariadb"
+    val sshPrivateKey = "$filesPath/" + dbConfig["sshPrivateKey"]
+    val sshKnownHosts = "$filesPath/" + dbConfig["sshKnownHosts"]
+
+    // Charger le fichier d'authentification SSH
+    val jsch = JSch()
+    jsch.addIdentity(sshPrivateKey)
+    jsch.setKnownHosts(FileInputStream(sshKnownHosts));
+
+    // Créer une session SSH
+    val session = jsch.getSession(dbConfig["sshUser"] as String, dbConfig["sshHost"] as String, (dbConfig["sshPort"] as String).toInt())
+    session.connect()
+
+    // Se connecter à la base de données via le tunnel SSH
+    val localPort = session.setPortForwardingL(0, dbConfig["dbHost"] as String, (dbConfig["dbPort"] as String).toInt())
+    val url = "jdbc:mariadb://localhost:$localPort/"+dbConfig["dbName"]
+    val connection = DriverManager.getConnection(url, dbConfig["dbUser"] as String, dbConfig["dbPassword"] as String)
 
     appConfig.getProperties("gauges").forEach { (k, v) ->
         logger.info("Creating gauge for ($k, $v)")
